@@ -658,8 +658,16 @@ function resolveDate(get){
 }
 
 /* ---------- CSV PARSER ---------- */
-function parseCSV(text){
-  text=text.replace(/^\ufeff/,""); // remove BOM
+function detectDelim(text){
+  const line=text.slice(0, text.search(/[\r\n]/)>0?text.search(/[\r\n]/):200);
+  const c=(line.match(/,/g)||[]).length, s=(line.match(/;/g)||[]).length, t=(line.match(/\t/g)||[]).length;
+  if(t>=c&&t>=s&&t>0) return "\t";
+  if(s>c) return ";";
+  return ",";
+}
+function parseCSV(text, delim){
+  text=text.replace(/^\ufeff/,"");
+  const D=delim||detectDelim(text);
   const rows=[]; let row=[],cur="",q=false;
   for(let i=0;i<text.length;i++){
     const c=text[i], n=text[i+1];
@@ -669,14 +677,26 @@ function parseCSV(text){
       else cur+=c;
     }else{
       if(c==='"')q=true;
-      else if(c===','){row.push(cur);cur="";}
-      else if(c==='\r'){}
+      else if(c===D){row.push(cur);cur="";}
+      else if(c==='\r'){ if(n!=='\n'){row.push(cur);rows.push(row);row=[];cur="";} } // \r solitário = quebra
       else if(c==='\n'){row.push(cur);rows.push(row);row=[];cur="";}
       else cur+=c;
     }
   }
   if(cur!==""||row.length){row.push(cur);rows.push(row);}
   return rows.filter(r=>r.some(c=>c.trim()!==""));
+}
+/* resposta do Google gviz quando vem como JSON (falta out:csv): /*O_o*\/ google.visualization.Query.setResponse({...}) */
+function parseGvizJson(text){
+  const m=text.match(/setResponse\(([\s\S]*)\)\s*;?\s*$/);
+  if(!m) return null;
+  let obj; try{obj=JSON.parse(m[1]);}catch(e){return null;}
+  const tbl=obj&&obj.table; if(!tbl||!tbl.cols) return null;
+  const header=tbl.cols.map(c=>(c.label||c.id||"").toString());
+  const data=(tbl.rows||[]).map(r=>(r.c||[]).map(cell=>{
+    const val=cell?(cell.f!=null?cell.f:(cell.v!=null?cell.v:"")):""; return String(val);
+  }));
+  return [header,...data];
 }
 
 function detectCols(headers){
@@ -808,14 +828,19 @@ async function loadData(){
     try{
       const res=await fetch(CONFIG.SHEET_CSV_URL,{cache:"no-store"});
       if(!res.ok) throw new Error("HTTP "+res.status+" — verifique se a planilha está publicada/compartilhada como 'qualquer pessoa com o link'.");
-      const txt=await res.text();
-      if(/^\s*</.test(txt)||/<html|<!doctype/i.test(txt.slice(0,200)))
-        throw new Error("A URL retornou uma página HTML, não CSV. Use o link de 'Publicar na web › CSV' ou o endpoint /gviz/...out:csv.");
-      const rows=parseCSV(txt);
+      let txt=(await res.text()).replace(/^\ufeff/,"");
+      // resposta JSON do gviz (faltou &tqx=out:csv) -> converte
+      let rows = /google\.visualization\.Query\.setResponse/.test(txt) ? parseGvizJson(txt) : null;
+      if(rows===null){
+        if(/^\s*</.test(txt)||/<html|<!doctype/i.test(txt.slice(0,200)))
+          throw new Error("A URL retornou uma página HTML, não os dados. Use o link de 'Publicar na web › CSV' ou um endpoint /gviz/...&tqx=out:csv (ou o Web App do Apps Script).");
+        rows=parseCSV(txt);
+      }
       const hdr=findHeaderRow(rows);
       const recs=rowsToRecords(rows);
       if(recs.length){ RAW=recs.map(enrich); usingDemo=false; setConn(true);
         console.info(`Planilha carregada: ${recs.length} registros (cabeçalho na linha ${hdr.idx+1}, ${hdr.score} colunas reconhecidas).`); return; }
+      if(rows.length<=1) throw new Error("A resposta veio com apenas o cabeçalho (0 linhas de dados). Confirme se a aba publicada contém os dados e se a faixa publicada não está vazia.");
       if(hdr.score<2) throw new Error("Não reconheci as colunas (Data, Processo, Supervisor, etc.). Confirme se a aba publicada é a base correta.");
       throw new Error(`Li ${rows.length-1} linhas, mas nenhuma virou registro válido.`);
     }catch(e){
