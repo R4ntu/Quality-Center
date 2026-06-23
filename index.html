@@ -224,6 +224,23 @@ table.dt tbody tr:last-child td{border-bottom:none}
 .search-box input{border:none;background:transparent;color:var(--text);font-size:12.5px;width:100%;outline:none;font-family:var(--font)}
 .search-box i{color:var(--text-3);font-size:12px}
 
+/* ===== PIVOT (tabela dinâmica supervisor > tipos) ===== */
+table.dt.pivot tbody tr.pivot-row{cursor:pointer}
+table.dt.pivot tr.pivot-row.open td{background:var(--hover)}
+.pivot-toggle{color:var(--text-3);text-align:center}
+.pivot-toggle i{transition:transform .18s ease}
+tr.pivot-row.open .pivot-toggle i{transform:rotate(90deg);color:var(--shopee)}
+tr.pivot-detail.hidden{display:none}
+tr.pivot-detail>td{padding:0!important;border-bottom:1px solid var(--border)!important;white-space:normal!important}
+.pivot-box{background:var(--bg-2);border-left:3px solid var(--shopee);margin:0 0 2px;padding:12px 14px}
+.pivot-cap{font-size:12px;font-weight:800;color:var(--text-2);margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.pivot-cap i{color:var(--shopee)}
+table.dt.sub{font-size:11.5px;background:var(--panel);border-radius:10px;overflow:hidden}
+table.dt.sub th{font-size:10px;padding:8px 10px;background:var(--bg);position:static}
+table.dt.sub td{padding:7px 10px}
+.mini-bar{height:8px;border-radius:6px;background:var(--border);overflow:hidden}
+.mini-bar>span{display:block;height:100%;background:linear-gradient(90deg,var(--shopee),var(--shopee-2));border-radius:6px}
+
 /* ===== RANK LISTS ===== */
 .rank-item{display:flex;align-items:center;gap:13px;padding:11px 0;border-bottom:1px solid var(--border)}
 .rank-item:last-child{border-bottom:none}
@@ -409,16 +426,10 @@ table.dt tbody tr:last-child td{border-bottom:none}
       </div>
     </div>
 
-    <!-- FOCO LIDERANÇA: TABELA + SCORE -->
-    <div class="grid mt16" style="grid-template-columns:1.7fr 1fr">
-      <div class="panel">
-        <div class="panel-h"><h3><i class="fa-solid fa-users-gear"></i> Supervisores — Visão de Pendências</h3><span class="sub">Ordenado por vencidos · clique p/ reordenar</span></div>
-        <div class="tbl-wrap"><table class="dt" id="tblLideres"></table></div>
-      </div>
-      <div class="panel">
-        <div class="panel-h"><h3><i class="fa-solid fa-medal"></i> Score dos Supervisores</h3><span class="sub">Ranking executivo</span></div>
-        <div id="scoreLideres"></div>
-      </div>
+    <!-- FOCO LIDERANÇA: PIVOT EXPANSÍVEL -->
+    <div class="panel mt16">
+      <div class="panel-h"><h3><i class="fa-solid fa-users-gear"></i> Supervisores — Visão de Pendências</h3><span class="sub">Clique no supervisor p/ abrir os tipos de ocorrência · cabeçalho ordena</span></div>
+      <div class="tbl-wrap"><table class="dt pivot" id="tblLideres"></table></div>
     </div>
 
     <!-- PARETO + PROCESSOS -->
@@ -625,13 +636,19 @@ function parseDate(v){
   if(!v) return null;
   if(v instanceof Date) return isNaN(v)?null:v;
   let s=v.toString().trim();
-  let m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if(!s) return null;
+  // formato gviz: Date(2026,0,2[,h,m,s])  (mês base 0)
+  let m=s.match(/^Date\((\d{4}),(\d{1,2}),(\d{1,2})(?:,(\d{1,2}),(\d{1,2})(?:,(\d{1,2}))?)?\)/i);
+  if(m) return new Date(+m[1],+m[2],+m[3],+(m[4]||0),+(m[5]||0),+(m[6]||0));
+  m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
   if(m){let y=+m[3];if(y<100)y+=2000;return new Date(y,+m[2]-1,+m[1],+(m[4]||0),+(m[5]||0),+(m[6]||0));}
   // dd/mm sem ano -> usa BASE_YEAR
   m=s.match(/^(\d{1,2})\/(\d{1,2})\s*$/);
   if(m) return new Date(CONFIG.BASE_YEAR,+m[2]-1,+m[1]);
   m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
   if(m) return new Date(+m[1],+m[2]-1,+m[3],+(m[4]||0),+(m[5]||0),+(m[6]||0));
+  // serial do Google Sheets (dias desde 30/12/1899)
+  if(/^\d{4,6}(\.\d+)?$/.test(s)){const n=+s; if(n>1&&n<80000){const d=new Date(Date.UTC(1899,11,30)+n*864e5);return isNaN(d)?null:d;}}
   let d=new Date(s);return isNaN(d)?null:d;
 }
 /* resolve a melhor data possível: Data -> Ocorrência -> 1º dia do Mês */
@@ -642,6 +659,7 @@ function resolveDate(get){
 
 /* ---------- CSV PARSER ---------- */
 function parseCSV(text){
+  text=text.replace(/^\ufeff/,""); // remove BOM
   const rows=[]; let row=[],cur="",q=false;
   for(let i=0;i<text.length;i++){
     const c=text[i], n=text[i+1];
@@ -675,16 +693,31 @@ function detectCols(headers){
   }
   return map;
 }
+/* nº de colunas-chave reconhecidas num cabeçalho candidato */
+function headerScore(headerRow){
+  const m=detectCols(headerRow);
+  return ["data","processo","supervisor","causador","feedback","subprocesso"].filter(k=>m[k]>=0).length;
+}
+/* localiza a linha de cabeçalho real (ignora linhas de título/preâmbulo) */
+function findHeaderRow(rows){
+  const lim=Math.min(rows.length,8);
+  let best=0,bestScore=-1;
+  for(let i=0;i<lim;i++){const s=headerScore(rows[i]);if(s>bestScore){bestScore=s;best=i;}}
+  return {idx:best,score:bestScore};
+}
 
 function rowsToRecords(rows){
   if(rows.length<2) return [];
-  const map=detectCols(rows[0]);
+  const hdr=findHeaderRow(rows);
+  const map=detectCols(rows[hdr.idx]);
   const out=[];
-  for(let i=1;i<rows.length;i++){
+  for(let i=hdr.idx+1;i<rows.length;i++){
     const r=rows[i];
     const get=k=>map[k]>=0 ? (r[map[k]]||"").trim() : "";
-    const data=resolveDate(get);
-    if(!data) continue;
+    // descarta a linha só se não tiver NENHUM campo-chave preenchido
+    const hasKey=[get("supervisor"),get("causador"),get("processo"),get("subprocesso"),get("data"),get("ocorrencia")].some(Boolean);
+    if(!hasKey) continue;
+    const data=resolveDate(get) || new Date(CONFIG.BASE_YEAR,0,1); // fallback p/ não perder a linha
     const email=get("causador");
     const status=mapFeedback(get("feedback"));
     out.push({
@@ -774,11 +807,17 @@ async function loadData(){
   if(CONFIG.SHEET_CSV_URL){
     try{
       const res=await fetch(CONFIG.SHEET_CSV_URL,{cache:"no-store"});
-      if(!res.ok) throw new Error("HTTP "+res.status);
+      if(!res.ok) throw new Error("HTTP "+res.status+" — verifique se a planilha está publicada/compartilhada como 'qualquer pessoa com o link'.");
       const txt=await res.text();
-      const recs=rowsToRecords(parseCSV(txt));
-      if(recs.length){ RAW=recs.map(enrich); usingDemo=false; setConn(true); return; }
-      throw new Error("Planilha sem registros válidos");
+      if(/^\s*</.test(txt)||/<html|<!doctype/i.test(txt.slice(0,200)))
+        throw new Error("A URL retornou uma página HTML, não CSV. Use o link de 'Publicar na web › CSV' ou o endpoint /gviz/...out:csv.");
+      const rows=parseCSV(txt);
+      const hdr=findHeaderRow(rows);
+      const recs=rowsToRecords(rows);
+      if(recs.length){ RAW=recs.map(enrich); usingDemo=false; setConn(true);
+        console.info(`Planilha carregada: ${recs.length} registros (cabeçalho na linha ${hdr.idx+1}, ${hdr.score} colunas reconhecidas).`); return; }
+      if(hdr.score<2) throw new Error("Não reconheci as colunas (Data, Processo, Supervisor, etc.). Confirme se a aba publicada é a base correta.");
+      throw new Error(`Li ${rows.length-1} linhas, mas nenhuma virou registro válido.`);
     }catch(e){
       console.warn("Falha ao carregar planilha:",e.message);
       setConn(false);
@@ -875,7 +914,6 @@ function renderAll(){
   renderProcessos();
   renderOfensores();
   renderReincidentes();
-  renderScoreLideres();
   renderTblLideres();
   renderEvo();
   renderComparativo();
@@ -1037,57 +1075,70 @@ function renderReincidentes(){
     </div>`).join("")||'<p class="muted">Sem dados.</p>';
 }
 
-/* ---------- SCORE LIDERES ---------- */
+/* ---------- SUPERVISOR STATS (com leque de tipos) ---------- */
 function liderStats(){
   const m={};
   DATA.forEach(r=>{
     if(CONFIG.IGNORE_LIDER.includes(r.lider)) return;
-    const o=m[r.lider]=m[r.lider]||{total:0,pend:0,venc:0,concl:0,na:0,agingSum:0};
+    const o=m[r.lider]=m[r.lider]||{total:0,pend:0,venc:0,concl:0,na:0,agingSum:0,tipos:{}};
     o.total++;
-    if(r.pendente){o.pend++;o.agingSum+=r.diasPend;} if(r.vencido)o.venc++;
+    if(r.pendente){o.pend++;o.agingSum+=r.diasPend; if(r.vencido)o.venc++;}
     if(r.concluido)o.concl++; if(r.na)o.na++;
+    const t=o.tipos[r.motivo]=o.tipos[r.motivo]||{total:0,pend:0,venc:0};
+    t.total++; if(r.pendente){t.pend++; if(r.vencido)t.venc++;}
   });
   return Object.entries(m).map(([lider,o])=>{
     const base=o.concl+o.pend;
-    const sla=pct(o.concl,base||1);                 // taxa de feedback realizado
-    const aging=o.pend?o.agingSum/o.pend:0;          // aging médio das pendências (dias)
-    const pendRate=pct(o.pend,base||1);
-    const conclRate=sla;
+    const sla=pct(o.concl,base||1);
+    const aging=o.pend?o.agingSum/o.pend:0;
     const agingScore=Math.max(0,Math.min(100,100-aging*10));
-    const score=Math.round(sla*0.4 + (100-pendRate)*0.3 + agingScore*0.2 + conclRate*0.1);
-    return {lider,total:o.total,pend:o.pend,venc:o.venc,sla,aging,score};
+    const score=Math.round(sla*0.4 + (100-pct(o.pend,base||1))*0.3 + agingScore*0.2 + sla*0.1);
+    const tipos=Object.entries(o.tipos).map(([tipo,v])=>({tipo,...v})).sort((a,b)=>b.total-a.total);
+    return {lider,total:o.total,pend:o.pend,venc:o.venc,sla,aging,score,tipos};
   });
 }
-function renderScoreLideres(){
-  const list=liderStats().sort((a,b)=>b.score-a.score);
-  const medal=i=>i===0?"gold":i===1?"silver":i===2?"bronze":"";
-  const ico=i=>i===0?"🥇":i===1?"🥈":i===2?"🥉":(i+1);
-  $("scoreLideres").innerHTML=list.map((l,i)=>`
-    <div class="rank-item">
-      <div class="rank-pos ${medal(i)}">${ico(i)}</div>
-      <div style="flex:1;min-width:0">
-        <div class="rank-name">${l.lider}</div>
-        <div class="bar-mini"><span style="width:${l.score}%"></span></div>
-      </div>
-      <span class="rank-val">${l.score}</span>
-    </div>`).join("")||'<p class="muted">Sem dados.</p>';
-}
 
-/* ---------- TABELA LIDERES ---------- */
+/* ---------- TABELA DINÂMICA: SUPERVISOR > TIPOS DE OCORRÊNCIA ---------- */
 let lidSort={k:"venc",dir:-1};
+let lidOpen=new Set();
 function renderTblLideres(){
   let list=liderStats();
   list.sort((a,b)=>{const v=(a[lidSort.k]>b[lidSort.k]?1:-1)*lidSort.dir;return v;});
   const t=$("tblLideres");
   const cols=[["lider","Supervisor"],["total","Ocorrências"],["pend","Pendentes"],["venc","SLA Vencido"],["sla","Realizado %"],["aging","Aging (d)"]];
-  t.innerHTML=`<thead><tr>${cols.map(c=>`<th data-k="${c[0]}">${c[1]} ${lidSort.k===c[0]?(lidSort.dir>0?"▲":"▼"):""}</th>`).join("")}</tr></thead>
-  <tbody>${list.map(l=>{
+  const head=`<thead><tr><th style="width:32px"></th>${cols.map(c=>`<th data-k="${c[0]}">${c[1]} ${lidSort.k===c[0]?(lidSort.dir>0?"▲":"▼"):""}</th>`).join("")}</tr></thead>`;
+  const body=list.map(l=>{
     const cl=l.sla>=90?"g":l.sla>=70?"y":"r";
-    return `<tr><td><b>${l.lider}</b></td><td>${fmt(l.total)}</td><td>${l.pend}</td>
-    <td class="text-r">${l.venc}</td><td><span class="badge-s ${cl}">${l.sla}%</span></td>
-    <td class="mono">${l.aging.toFixed(1)}</td></tr>`;}).join("")}</tbody>`;
-  t.querySelectorAll("th").forEach(th=>th.onclick=()=>{
+    const open=lidOpen.has(l.lider);
+    const maxT=Math.max(1,...l.tipos.map(x=>x.total));
+    const detail=`<tr class="pivot-detail ${open?"":"hidden"}"><td></td><td colspan="6">
+      <div class="pivot-box">
+        <div class="pivot-cap"><i class="fa-solid fa-diagram-project"></i> Tipos de ocorrência — ${l.lider} <span class="muted">(${l.tipos.length})</span></div>
+        <table class="dt sub">
+          <thead><tr><th>Subprocesso (erro)</th><th>Qtd</th><th>%</th><th>Pendentes</th><th>Vencidos</th><th style="width:32%">Distribuição</th></tr></thead>
+          <tbody>${l.tipos.map(tp=>`<tr>
+            <td>${tp.tipo}</td><td>${fmt(tp.total)}</td><td class="mono">${pct(tp.total,l.total)}%</td>
+            <td>${tp.pend||0}</td><td class="text-r">${tp.venc||0}</td>
+            <td><div class="mini-bar"><span style="width:${Math.round(tp.total/maxT*100)}%"></span></div></td>
+          </tr>`).join("")}</tbody>
+        </table>
+      </div></td></tr>`;
+    return `<tr class="pivot-row ${open?"open":""}" data-lider="${encodeURIComponent(l.lider)}">
+      <td class="pivot-toggle"><i class="fa-solid fa-chevron-right"></i></td>
+      <td><b>${l.lider}</b></td><td>${fmt(l.total)}</td><td>${l.pend}</td>
+      <td class="text-r">${l.venc}</td><td><span class="badge-s ${cl}">${l.sla}%</span></td>
+      <td class="mono">${l.aging.toFixed(1)}</td></tr>${detail}`;
+  }).join("");
+  t.innerHTML=head+`<tbody>${body}</tbody>`;
+  // ordenação no cabeçalho
+  t.querySelectorAll("th[data-k]").forEach(th=>th.onclick=()=>{
     const k=th.dataset.k; lidSort.dir=lidSort.k===k?-lidSort.dir:1; lidSort.k=k; renderTblLideres();});
+  // expandir/recolher
+  t.querySelectorAll(".pivot-row").forEach(tr=>tr.onclick=(e)=>{
+    if(e.target.closest("th")) return;
+    const lid=decodeURIComponent(tr.dataset.lider);
+    if(lidOpen.has(lid)) lidOpen.delete(lid); else lidOpen.add(lid);
+    renderTblLideres();});
 }
 
 /* ---------- EVOLUCAO ---------- */
